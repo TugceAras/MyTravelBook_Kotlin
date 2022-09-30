@@ -1,0 +1,216 @@
+package com.tugcearas.mytravelbook.view
+
+import android.Manifest
+import android.content.Intent
+import android.content.SharedPreferences
+import android.content.pm.PackageManager
+import android.location.Location
+import android.location.LocationListener
+import android.location.LocationManager
+import androidx.appcompat.app.AppCompatActivity
+import android.os.Bundle
+import android.view.View
+import android.widget.Toast
+import androidx.activity.result.ActivityResultLauncher
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
+import androidx.room.Room
+
+import com.google.android.gms.maps.CameraUpdateFactory
+import com.google.android.gms.maps.GoogleMap
+import com.google.android.gms.maps.OnMapReadyCallback
+import com.google.android.gms.maps.SupportMapFragment
+import com.google.android.gms.maps.model.LatLng
+import com.google.android.gms.maps.model.MarkerOptions
+import com.google.android.material.snackbar.Snackbar
+import com.tugcearas.mytravelbook.R
+import com.tugcearas.mytravelbook.databinding.ActivityMapsBinding
+import com.tugcearas.mytravelbook.db.PlaceDao
+import com.tugcearas.mytravelbook.db.PlaceDatabase
+import com.tugcearas.mytravelbook.model.PlaceModel
+import io.reactivex.rxjava3.android.schedulers.AndroidSchedulers
+import io.reactivex.rxjava3.disposables.CompositeDisposable
+import io.reactivex.rxjava3.schedulers.Schedulers
+import kotlinx.coroutines.handleCoroutineException
+
+class MapsActivity : AppCompatActivity(), OnMapReadyCallback, GoogleMap.OnMapLongClickListener {
+
+    private lateinit var mMap: GoogleMap
+    private lateinit var binding: ActivityMapsBinding
+    private lateinit var locationManager : LocationManager
+    private lateinit var locationListener : LocationListener
+    private lateinit var permissionLauncher : ActivityResultLauncher<String>
+    private lateinit var sharedPreferences: SharedPreferences
+    private var trackBoolean : Boolean? = null
+    private var selectedLatitude:Double? = null
+    private var selectedlongitude:Double? = null
+    private lateinit var db:PlaceDatabase
+    private lateinit var placeDao:PlaceDao
+    val compositeDisposable=CompositeDisposable()
+    var placeFromMain : PlaceModel?=null
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        binding = ActivityMapsBinding.inflate(layoutInflater)
+        setContentView(binding.root)
+        val mapFragment = supportFragmentManager
+            .findFragmentById(R.id.map) as SupportMapFragment
+        mapFragment.getMapAsync(this)
+
+        registerLauncher()
+        sharedPreferences = this.getSharedPreferences("com.tugcearas.mytravelbook", MODE_PRIVATE)
+        trackBoolean = false
+        selectedLatitude = 0.0
+        selectedlongitude = 0.0
+
+        db = Room.databaseBuilder(applicationContext,PlaceDatabase::class.java,"Places").build()
+        placeDao = db.placeDao()
+
+        binding.saveButton.isEnabled = false
+
+    }
+
+    override fun onMapReady(googleMap: GoogleMap) {
+        mMap = googleMap
+        mMap.setOnMapLongClickListener(this)
+
+        val intent = intent
+        val info = intent.getStringExtra("info")
+        if (info == "new"){
+            binding.saveButton.visibility = View.VISIBLE
+            binding.deleteButton.visibility = View.GONE
+
+            locationManager = this.getSystemService(LOCATION_SERVICE) as LocationManager
+            locationListener = object:LocationListener{
+                override fun onLocationChanged(location: Location) {
+
+                    //end location control
+                    trackBoolean = sharedPreferences.getBoolean("trackBoolean",false)
+                    if (trackBoolean == false){
+                        val userLocation = LatLng(location.latitude,location.longitude)
+                        mMap.moveCamera(CameraUpdateFactory.newLatLngZoom(userLocation,13f))
+                        sharedPreferences.edit().putBoolean("trackBoolean",true).apply()
+                    }
+                }
+            }
+            getPermission()
+        }
+        else{
+            mMap.clear()
+            placeFromMain = intent.getSerializableExtra("selectedPlace") as? PlaceModel
+            placeFromMain?.let {
+                val latlng = LatLng(it.latitude,it.longitude)
+                mMap.addMarker(MarkerOptions().position(latlng).title(it.name))
+                mMap.moveCamera(CameraUpdateFactory.newLatLngZoom(latlng,13f))
+
+                binding.placeEditText.setText(it.name)
+                binding.saveButton.visibility = View.GONE
+                binding.deleteButton.visibility = View.VISIBLE
+            }
+        }
+
+    }
+
+    private fun getPermission(){
+        if(ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED){
+
+            if(ActivityCompat.shouldShowRequestPermissionRationale(this,Manifest.permission.ACCESS_FINE_LOCATION)){
+                Snackbar.make(binding.root,"Permission needed",Snackbar.LENGTH_INDEFINITE).setAction("Give permission"){
+                    //request permission
+                    permissionLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)
+                }.show()
+            }
+            else{
+                //request permission
+                permissionLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)
+            }
+        }
+        else{
+            //permission granted
+            locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER,0,0f,locationListener)
+            getLastLocation()
+            mMap.isMyLocationEnabled = true
+        }
+    }
+
+    private fun registerLauncher(){
+
+        permissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()){result ->
+
+            //permissioin granted
+            if (result){
+                if(ContextCompat.checkSelfPermission(this,Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED){
+                    locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER,0,0f,locationListener)
+                    getLastLocation()
+                }
+                mMap.isMyLocationEnabled = true
+            }
+
+            //permission denied
+            else{
+                Toast.makeText(this@MapsActivity, "Permission needed", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+    
+    private fun getLastLocation(){
+       
+        if(ContextCompat.checkSelfPermission(this,Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED){
+            val lastLocation = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER)
+            if (lastLocation != null){
+                val lastUserLocation = LatLng(lastLocation.latitude,lastLocation.longitude)
+                mMap.moveCamera(CameraUpdateFactory.newLatLngZoom(lastUserLocation,13f))
+            }
+        }
+        else{
+            Toast.makeText(this@MapsActivity, "Could not get last location", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    override fun onMapLongClick(p0: LatLng) {
+
+        mMap.clear()
+        mMap.addMarker(MarkerOptions().position(p0))
+        selectedLatitude = p0.latitude
+        selectedlongitude = p0.longitude
+        binding.saveButton.isEnabled = true
+    }
+
+    fun save(vew: View){
+
+        if(selectedLatitude!=null && selectedlongitude!=null){
+            val place = PlaceModel(binding.placeEditText.text.toString(),selectedLatitude!!,selectedlongitude!!)
+            compositeDisposable.add(
+                placeDao.insert(place)
+                    .subscribeOn(Schedulers.io())
+                    .observeOn(AndroidSchedulers.mainThread())
+                    .subscribe(this::handleResponse)
+            )
+        }
+    }
+
+    fun delete(view:View){
+
+        placeFromMain?.let {
+            compositeDisposable.add(
+                placeDao.delete(it)
+                    .subscribeOn(Schedulers.io())
+                    .observeOn(AndroidSchedulers.mainThread())
+                    .subscribe(this::handleResponse)
+            )
+        }
+
+    }
+
+    private fun handleResponse(){
+        val intent= Intent(this,MainActivity::class.java)
+        intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
+        startActivity(intent)
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        compositeDisposable.clear()
+    }
+}
